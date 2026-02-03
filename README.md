@@ -1,0 +1,2 @@
+# ngender-php
+由AI辅助将observerss大佬写的ngender转换成了php格式
