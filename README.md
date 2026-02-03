@@ -1,4 +1,4 @@
-# ngender-php
+# ngender-php-API
 由AI辅助将observerss大佬写的ngender改成了php，支持网页访问和API
 ## 功能
 |功能|效果|说明|
