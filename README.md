@@ -1,5 +1,5 @@
 # ngender-php
-由AI辅助将observerss大佬写的ngender转换成了php格式
+由AI辅助将observerss大佬写的ngender改成了php，支持网页访问和API
 ## 部署
 ### 安装
 部署在安装了php 7.0+并带有mbstring的服务器，异步项目
