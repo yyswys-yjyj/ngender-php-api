@@ -1,10 +1,7 @@
 <?php
 /**
- * NGender 纯PHP单文件版 - 读取JSON字典格式数据
- * 复刻原Python版贝叶斯中文姓名性别猜测算法
- * 支持：无问号API + 网页界面 + 防XSS + LocalStorage历史（带结果） + 明文分享?data=xxx + API解除字数限制
- * 数据来源：根目录charfreq.json | PHP7.0+ | 依赖mbstring扩展
- * 原项目：https://github.com/observerss/ngender
+ * NGender 纯PHP单文件版 - 修复反向性别模式（交换男女得分）
+ * 核心：method=2 时交换男性/女性得分，重新计算性别，而非仅改展示
  */
 header('Content-Type: text/html; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
@@ -19,6 +16,17 @@ if (!extension_loaded('mbstring')) jsonExit(500, '缺少必要扩展：mbstring�
 define('BASE_MALE', 0.581915415729593);
 define('BASE_FEMALE', 0.418084584270407);
 define('JSON_FILE_PATH', __DIR__ . '/charfreq.json');
+define('TIPS_JSON_FILE_PATH', __DIR__ . '/tips.json');
+
+// 整活模式配置（修正method=2的逻辑）
+define('METHOD_NORMAL', 0);    // 正常模式：原始算法结果
+define('METHOD_REVERSE', 1);   // 反转性别：1-prob + 强制0~0.4区间（改分数）
+define('METHOD_OPPOSITE', 2);  // 反向性别：交换男女得分，重新计算性别（核心修复）
+define('METHOD_LABELS', [
+    METHOD_NORMAL   => '正常',
+    METHOD_REVERSE  => '反转性别',
+    METHOD_OPPOSITE => '反向性别'
+]);
 
 // 工具函数：XSS过滤
 function xssFilter($str) {
@@ -38,8 +46,7 @@ function getRoute() {
     return preg_replace('/\/+/', '/', '/' . trim($uri, '/'));
 }
 
-// 工具函数：姓名验证（重构：增加长度限制开关）
-// $limitLength=true：2-4纯中文 | $limitLength=false：纯中文（不限字数）
+// 工具函数：姓名验证
 function checkName($name, $limitLength = true) {
     if ($limitLength) {
         return preg_match('/^[\x{4e00}-\x{9fa5}]{2,4}$/u', $name);
@@ -48,7 +55,7 @@ function checkName($name, $limitLength = true) {
     }
 }
 
-// 工具函数：多方式获取参数（GET/POST/JSON）
+// 工具函数：多方式获取参数
 function getParam($key) {
     if (isset($_GET[$key])) return xssFilter($_GET[$key]);
     if (isset($_POST[$key])) return xssFilter($_POST[$key]);
@@ -56,7 +63,7 @@ function getParam($key) {
     return json_last_error() === JSON_ERROR_NONE && isset($json[$key]) ? xssFilter($json[$key]) : null;
 }
 
-// 工具函数：加载并解析charfreq.json
+// 加载字符频次数据
 function loadJsonData() {
     if (!file_exists(JSON_FILE_PATH)) jsonExit(500, '未找到charfreq.json，请放在根目录');
     if (!is_readable(JSON_FILE_PATH)) jsonExit(500, 'charfreq.json无读取权限，设置为644');
@@ -77,27 +84,66 @@ function loadJsonData() {
     return ['charFreq'=>$charFreq, 'maleTotal'=>$maleTotal, 'femaleTotal'=>$femaleTotal];
 }
 
-// 工具函数：生成随机趣味文案（按置信度分区：0.6+确信/0.4-0.6不确定/0.4-反向）
-function getRandomTip($prob, $gender) {
-    $g = $gender === 'male' ? '男' : '女';
-    $rg = $gender === 'male' ? '女' : '男';
-    $tips = [
-        'sure' => ["纯纯的{$g}孩纸，毫无争议！", "这名字刻着{$g}性烙印，稳得一批～", "妥妥的{$g}生，系统拍胸脯保证！", "这包{$g}性倾向的！", "绝对是{$g}性姓名～"],
-        'uncertain' => ["雌雄难辨，有点像{$g}孩纸，但系统拿捏不准～", "{$g}性倾向，但{$rg}性特征也很明显", "薛定谔的性别，既像{$g}又像{$rg}～", "中性值拉满，建议直接问本人😂", "系统陷入沉思：这名字我分不清啊！"],
-        'reverse' => ["反向预警：看着像{$g}，实际大概率是{$rg}！", "别被名字骗了，妥妥的{$rg}性隐藏款～", "系统翻车：名义{$g}，实际{$rg}概率更高！", "表面{$g}，内核{$rg}～", "这名字反着来的概率更大😜"]
-    ];
-    if ($prob > 0.6) return $tips['sure'][array_rand($tips['sure'])];
-    elseif ($prob >= 0.4) return $tips['uncertain'][array_rand($tips['uncertain'])];
-    else return $tips['reverse'][array_rand($tips['reverse'])];
+// 加载外置文案tips.json
+function loadTipsData() {
+    if (!file_exists(TIPS_JSON_FILE_PATH)) jsonExit(500, '未找到tips.json，请放在根目录');
+    if (!is_readable(TIPS_JSON_FILE_PATH)) jsonExit(500, 'tips.json无读取权限，设置为644');
+    $content = file_get_contents(TIPS_JSON_FILE_PATH);
+    $tipsData = json_decode($content, true);
+    if (json_last_error() !== JSON_ERROR_NONE) jsonExit(500, 'Tips JSON解析失败', ['err'=>json_last_error_msg()]);
+    $requiredKeys = ['male_sure', 'male_uncertain', 'male_reverse', 'female_sure', 'female_uncertain', 'female_reverse'];
+    foreach ($requiredKeys as $key) {
+        if (!isset($tipsData[$key]) || !is_array($tipsData[$key]) || empty($tipsData[$key])) {
+            jsonExit(500, "Tips JSON缺少有效分区【{$key}】，需为非空数组");
+        }
+    }
+    return $tipsData;
 }
 
-// 核心NGender贝叶斯算法类
+// 生成趣味文案（基于最终性别分区）
+function getRandomTip($prob, $final_gender, $tipsData) {
+    // 强制校验性别格式
+    $final_gender = strtolower(trim($final_gender));
+    if (!in_array($final_gender, ['male', 'female'])) {
+        $final_gender = 'male';
+    }
+    
+    // 性别中文映射（匹配最终性别）
+    $g_cn = $final_gender === 'male' ? '男' : '女';
+    $rg_cn = $final_gender === 'male' ? '女' : '男';
+    
+    // 确定置信度分区
+    if ($prob > 0.6) {
+        $level = 'sure';
+    } elseif ($prob >= 0.4) {
+        $level = 'uncertain';
+    } else {
+        $level = 'reverse';
+    }
+    
+    // 生成分区key（基于最终性别，不再用原始性别）
+    $tipKey = $final_gender . '_' . $level;
+    if (!isset($tipsData[$tipKey]) || empty($tipsData[$tipKey])) {
+        $tipKey = $final_gender . '_sure';
+    }
+    
+    // 随机抽取文案并替换占位符
+    $tipList = $tipsData[$tipKey];
+    $randomTip = $tipList[array_rand($tipList)];
+    $randomTip = str_replace(['{targetG}', '{targetRG}'], [$g_cn, $rg_cn], $randomTip);
+    
+    return $randomTip;
+}
+
+// 核心NGender算法类（新增交换得分的方法）
 class NGender {
     private $charFreq, $maleTotal, $femaleTotal, $baseMale, $baseFemale;
     public function __construct($cf, $mt, $ft, $bm, $bf) {
         $this->charFreq = $cf; $this->maleTotal = $mt; $this->femaleTotal = $ft;
         $this->baseMale = $bm; $this->baseFemale = $bf;
     }
+    
+    // 计算单个性别的概率
     private function calcProb($name, $g) {
         $prob = log($g === 'male' ? $this->baseMale : $this->baseFemale);
         $total = $g === 'male' ? $this->maleTotal : $this->femaleTotal;
@@ -109,77 +155,209 @@ class NGender {
         }
         return $prob;
     }
+    
+    // 正常模式：原始猜测
     public function guess($name) {
-        $pM = $this->calcProb($name, 'male'); $pF = $this->calcProb($name, 'female');
-        $maxP = max($pM, $pF); $eM = exp($pM - $maxP); $eF = exp($pF - $maxP);
-        $pMale = $eM / ($eM + $eF); $pFemale = 1 - $pMale;
-        return $pMale > $pFemale ? ['gender'=>'male', 'prob'=>round($pMale, 6)] : ['gender'=>'female', 'prob'=>round($pFemale, 6)];
+        $pM = $this->calcProb($name, 'male'); 
+        $pF = $this->calcProb($name, 'female');
+        $maxP = max($pM, $pF); 
+        $eM = exp($pM - $maxP); 
+        $eF = exp($pF - $maxP);
+        $pMale = $eM / ($eM + $eF); 
+        $pFemale = 1 - $pMale;
+        
+        return [
+            'gender' => $pMale > $pFemale ? 'male' : 'female',
+            'prob_male' => round($pMale, 6),  // 男性得分
+            'prob_female' => round($pFemale, 6), // 女性得分
+            'final_prob' => $pMale > $pFemale ? round($pMale, 6) : round($pFemale, 6)
+        ];
+    }
+    
+    // 反向性别模式：交换男女得分，重新计算
+    public function guessOpposite($name) {
+        $pM = $this->calcProb($name, 'male'); 
+        $pF = $this->calcProb($name, 'female');
+        $maxP = max($pM, $pF); 
+        $eM = exp($pM - $maxP); 
+        $eF = exp($pF - $maxP);
+        $pMale = $eM / ($eM + $eF); 
+        $pFemale = 1 - $pMale;
+        
+        // 核心：交换男女得分
+        $swapMale = $pFemale;
+        $swapFemale = $pMale;
+        
+        return [
+            'gender' => $swapMale > $swapFemale ? 'male' : 'female',
+            'prob_male' => round($swapMale, 6),
+            'prob_female' => round($swapFemale, 6),
+            'final_prob' => $swapMale > $swapFemale ? round($swapMale, 6) : round($swapFemale, 6)
+        ];
     }
 }
 
-// 加载JSON数据并初始化算法
+// 调整结果的工具函数（适配三种模式）
+function adjustResultByMethod($ngender, $name, $method) {
+    switch ($method) {
+        case METHOD_NORMAL:
+            // 正常模式：原始结果
+            $res = $ngender->guess($name);
+            return [
+                'gender' => $res['gender'],
+                'final_prob' => $res['final_prob'],
+                'method' => $method,
+                'method_label' => METHOD_LABELS[$method]
+            ];
+            
+        case METHOD_REVERSE:
+            // 反转性别：改分数 + 反转性别
+            $res = $ngender->guess($name);
+            $prob = 1 - $res['final_prob'];
+            $gender = $res['gender'] === 'male' ? 'female' : 'male';
+            if ($prob > 0.4) {
+                $prob = 0.4 - ($prob - 0.4);
+            }
+            $prob = round(max(0, min(1, $prob)), 6);
+            return [
+                'gender' => $gender,
+                'final_prob' => $prob,
+                'method' => $method,
+                'method_label' => METHOD_LABELS[$method]
+            ];
+            
+        case METHOD_OPPOSITE:
+            // 反向性别：交换得分，重新计算（核心修复）
+            $res = $ngender->guessOpposite($name);
+            return [
+                'gender' => $res['gender'],
+                'final_prob' => $res['final_prob'],
+                'method' => $method,
+                'method_label' => METHOD_LABELS[$method]
+            ];
+            
+        default:
+            $res = $ngender->guess($name);
+            return [
+                'gender' => $res['gender'],
+                'final_prob' => $res['final_prob'],
+                'method' => METHOD_NORMAL,
+                'method_label' => METHOD_LABELS[METHOD_NORMAL]
+            ];
+    }
+}
+
+// 加载数据
 $jsonData = loadJsonData();
+$tipsData = loadTipsData();
 $ngender = new NGender($jsonData['charFreq'], $jsonData['maleTotal'], $jsonData['femaleTotal'], BASE_MALE, BASE_FEMALE);
 
 // 路由处理
 $route = getRoute();
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') jsonExit(200);
 
-// 路由1：API接口 /api/v1/genderguess（新增nolimit参数支持）
+// 路由1：API接口
 if ($route === '/api/v1/genderguess') {
     $name = getParam('name');
     $nolimit = getParam('nolimit');
-    // 判断是否开启解除字数限制（支持true/1/yes/on，不区分大小写）
+    $method = isset($_GET['method']) || isset($_POST['method']) ? (int)getParam('method') : METHOD_NORMAL;
+    
+    if (!in_array($method, [METHOD_NORMAL, METHOD_REVERSE, METHOD_OPPOSITE])) {
+        $method = METHOD_NORMAL;
+    }
+    
     $isNoLimit = in_array(strtolower((string)$nolimit), ['true', '1', 'yes', 'on']);
     
     if (is_null($name) || $name === '') jsonExit(400, '缺少参数name');
-    // 根据nolimit参数调整校验规则
     if (!checkName($name, !$isNoLimit)) {
         $errorMsg = $isNoLimit ? '姓名必须是纯中文字符（无字数限制）' : '姓名必须是2-4个纯中文字符';
         jsonExit(400, $errorMsg);
     }
     
-    $res = $ngender->guess($name);
-    $gCn = $res['gender'] === 'male' ? '男' : '女';
+    // 获取调整后的结果（适配三种模式）
+    $adjusted = adjustResultByMethod($ngender, $name, $method);
+    $gCn = $adjusted['gender'] === 'male' ? '男' : '女';
+    
     jsonExit(200, '查询成功', [
-        'name'=>$name, 'gender'=>$res['gender'], 'gender_cn'=>$gCn,
-        'probability'=>$res['prob'], 'fun_tip'=>getRandomTip($res['prob'], $res['gender']),
-        'nolimit_used' => $isNoLimit // 新增返回是否使用了解除字数限制
+        'name'=>$name, 
+        'gender'=>$adjusted['gender'],
+        'gender_cn'=>$gCn,
+        'probability'=>$adjusted['final_prob'],
+        'fun_tip'=>getRandomTip($adjusted['final_prob'], $adjusted['gender'], $tipsData), 
+        'nolimit_used' => $isNoLimit,
+        'mode' => $adjusted['method'],
     ]);
 }
 
-// 路由2：根路径 / 网页界面（核心：处理分享链接?data=xxx）
+// 路由2：网页界面
 elseif ($route === '/') {
     $inputName = ''; $error = ''; $result = null; $randomTip = '';
-    // 处理分享链接：?data=姓名 明文解析
+    $defaultMethod = METHOD_NORMAL;
+    
+    // 处理分享链接
     if (isset($_GET['data']) && !empty($_GET['data'])) {
-        $inputName = xssFilter(trim($_GET['data']));
-        if (checkName($inputName)) { // 网页端仍保留2-4字限制
-            $guessRes = $ngender->guess($inputName);
+        $rawData = xssFilter(trim($_GET['data']));
+        $method = isset($_GET['method']) ? (int)$_GET['method'] : METHOD_NORMAL;
+        
+        if (str_starts_with($rawData, '#')) {
+            $inputName = substr($rawData, 1);
+            $method = METHOD_REVERSE;
+        } elseif (str_starts_with($rawData, '@')) {
+            $inputName = substr($rawData, 1);
+            $method = METHOD_OPPOSITE;
+        } else {
+            $inputName = $rawData;
+        }
+        
+        if (!in_array($method, [METHOD_NORMAL, METHOD_REVERSE, METHOD_OPPOSITE])) {
+            $method = METHOD_NORMAL;
+        }
+        $defaultMethod = $method;
+        
+        if (checkName($inputName)) {
+            $adjusted = adjustResultByMethod($ngender, $inputName, $method);
             $result = [
-                'name'=>$inputName, 'gender'=>$guessRes['gender'],
-                'gender_cn'=>$guessRes['gender']==='male'?'男':'女', 'prob'=>$guessRes['prob']
+                'name'=>$inputName, 
+                'gender'=>$adjusted['gender'],
+                'gender_cn'=>$adjusted['gender']==='male'?'男':'女', 
+                'prob'=>$adjusted['final_prob'],
+                'method' => $adjusted['method'],
+                'method_label' => $adjusted['method_label']
             ];
-            $randomTip = getRandomTip($guessRes['prob'], $guessRes['gender']);
+            $randomTip = getRandomTip($adjusted['final_prob'], $adjusted['gender'], $tipsData);
         } else {
             $error = '分享链接无效，姓名格式错误！';
             $inputName = '';
         }
     }
+    
     // 处理表单提交
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $inputName = xssFilter(trim($_POST['name'] ?? ''));
-        if ($inputName === '') $error = '请输入中文姓名！';
-        elseif (!checkName($inputName)) $error = '姓名格式错误！必须是2-4个纯中文字符'; // 网页端仍保留2-4字限制
-        else {
-            $guessRes = $ngender->guess($inputName);
+        $method = isset($_POST['method']) ? (int)$_POST['method'] : METHOD_NORMAL;
+        
+        if (!in_array($method, [METHOD_NORMAL, METHOD_REVERSE, METHOD_OPPOSITE])) {
+            $method = METHOD_NORMAL;
+        }
+        
+        if ($inputName === '') {
+            $error = '请输入中文姓名！';
+        } elseif (!checkName($inputName)) {
+            $error = '姓名格式错误！必须是2-4个纯中文字符';
+        } else {
+            $adjusted = adjustResultByMethod($ngender, $inputName, $method);
             $result = [
-                'name'=>$inputName, 'gender'=>$guessRes['gender'],
-                'gender_cn'=>$guessRes['gender']==='male'?'男':'女', 'prob'=>$guessRes['prob']
+                'name'=>$inputName, 
+                'gender'=>$adjusted['gender'],
+                'gender_cn'=>$adjusted['gender']==='male'?'男':'女', 
+                'prob'=>$adjusted['final_prob'],
+                'method' => $adjusted['method'],
+                'method_label' => $adjusted['method_label']
             ];
-            $randomTip = getRandomTip($guessRes['prob'], $guessRes['gender']);
+            $randomTip = getRandomTip($adjusted['final_prob'], $adjusted['gender'], $tipsData);
         }
     }
+    
     // 网页界面输出
     ?>
     <!DOCTYPE html>
@@ -187,7 +365,7 @@ elseif ($route === '/') {
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>中文姓名性别猜测 | 仅供娱乐</title>
+        <title>中文姓名性别猜测</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <style>
             @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
@@ -204,6 +382,11 @@ elseif ($route === '/') {
             .share-btn { background: #10b981; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px; margin-top: 10px; }
             .share-btn:hover { background: #059669; }
             .copy-tip { font-size: 12px; color: #10b981; margin-top: 6px; display: none; }
+            .share-section { background: #4b5563/50; border-radius: 8px; padding: 16px; margin-top: 12px; }
+            .method-tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; margin-left: 8px; }
+            .tag-normal { background: #3b82f6/30; color: #3b82f6; }
+            .tag-reverse { background: #ef4444/30; color: #ef4444; }
+            .tag-opposite { background: #ec4899/30; color: #ec4899; }
             @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         </style>
     </head>
@@ -211,7 +394,7 @@ elseif ($route === '/') {
         <div class="container">
             <div class="card text-center">
                 <h1 class="text-2xl font-bold mb-4">中文姓名性别猜测</h1>
-                <p class="text-gray-400 mb-8">贝叶斯算法 | 仅供娱乐 请勿当真<br>参考项目：<a href="https://github.com/observerss/NGender">observerss/NGender</a></p>
+                <p class="text-gray-400 mb-8">贝叶斯算法加持 | 仅供娱乐 请勿当真<br>参考项目：<a href="https://github.com/observerss/NGender">observerss:NGender</a><br>开源：<a href="https://github.com/yyswys-yjyj/ngender-php-api">yyswys-yjyj:ngender-php-api</a></p>
                 
                 <form method="post" action="/" class="mb-6" id="nameForm">
                     <div class="mb-4">
@@ -219,6 +402,14 @@ elseif ($route === '/') {
                                placeholder="输入2-4个中文字符（如：赵本山、宋丹丹）" 
                                class="w-full px-4 py-3 bg-gray-800 border border-gray-600 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
                                required>
+                    </div>
+                    <div class="mb-4">
+                        <label class="block text-sm text-gray-300 mb-2 text-left">模式：</label>
+                        <select name="method" class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500">
+                            <option value="<?php echo METHOD_NORMAL; ?>" <?php echo $defaultMethod == METHOD_NORMAL ? 'selected' : ''; ?>>正常</option>
+                            <option value="<?php echo METHOD_REVERSE; ?>" <?php echo $defaultMethod == METHOD_REVERSE ? 'selected' : ''; ?>>反转性别</option>
+                            <option value="<?php echo METHOD_OPPOSITE; ?>" <?php echo $defaultMethod == METHOD_OPPOSITE ? 'selected' : ''; ?>>反向性别</option>
+                        </select>
                     </div>
                     <button type="submit" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300 transform hover:scale-105 active:scale-95">
                         开始猜测性别
@@ -233,20 +424,33 @@ elseif ($route === '/') {
 
                 <?php if ($result): ?>
                     <div class="bg-gray-800/50 rounded-lg p-4 mt-4 animate-fadeInUp" id="resultCard">
-                        <p class="text-lg mb-2">姓名：<span class="font-bold text-white"><?php echo $result['name']; ?></span></p>
+                        <p class="text-lg mb-2">
+                            姓名：<span class="font-bold text-white"><?php echo $result['name']; ?></span>
+                        </p>
                         <p class="text-xl">
                             猜测性别：<span class="gender-<?php echo $result['gender']; ?>"><?php echo $result['gender_cn']; ?></span>
                             <span class="prob">置信度：<?php echo $result['prob']; ?></span>
                         </p>
                         <p class="mt-2 text-yellow-400 text-sm"><?php echo $randomTip; ?></p>
-                        <button class="share-btn" onclick="copyShareLink('<?php echo $result['name']; ?>')">复制分享链接</button>
+                    </div>
+
+                    <div class="share-section animate-fadeInUp">
+                        <h3 class="text-lg font-medium mb-3 text-gray-200">分享设置</h3>
+                        <div class="mb-4 text-left">
+                            <label class="block text-sm text-gray-400 mb-2">分享模式：</label>
+                            <select id="shareMethod" class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                <option value="<?php echo METHOD_NORMAL; ?>" <?php echo $result['method'] == METHOD_NORMAL ? 'selected' : ''; ?>>正常</option>
+                                <option value="<?php echo METHOD_REVERSE; ?>" <?php echo $result['method'] == METHOD_REVERSE ? 'selected' : ''; ?>>反转性别</option>
+                                <option value="<?php echo METHOD_OPPOSITE; ?>" <?php echo $result['method'] == METHOD_OPPOSITE ? 'selected' : ''; ?>>反向性别</option>
+                            </select>
+                        </div>
+                        <button class="share-btn w-full" onclick="copyShareLink('<?php echo $result['name']; ?>')">复制分享链接</button>
                         <p class="copy-tip" id="copyTip">链接已复制！打开直接看结果</p>
                     </div>
                 <?php endif; ?>
 
-                <!-- 历史记录区域（带猜测结果） -->
                 <div class="mt-8" id="historySection">
-                    <h3 class="text-lg font-medium mb-4 text-gray-300">查询历史 <span class="text-sm text-gray-400">(含结果)</span></h3>
+                    <h3 class="text-lg font-medium mb-4 text-gray-300">查询历史</h3>
                     <div id="historyList" class="max-h-48 overflow-y-auto pr-2"></div>
                     <?php if ($result): ?>
                         <script>window.guessResult = <?php echo json_encode($result); ?>;</script>
@@ -255,92 +459,77 @@ elseif ($route === '/') {
                 </div>
 
                 <div class="mt-8 text-sm text-gray-500">
-                    <p>API接口：<code class="bg-gray-800 px-2 py-1 rounded">/api/v1/genderguess?name=某某某</code></p>
-                    <p>解除字数限制：<code class="bg-gray-800 px-2 py-1 rounded">/api/v1/genderguess?name=某某某&nolimit=1</code></p>
-                    <p class="mt-2 text-gray-400">数据来源：<code class="bg-gray-800 px-2 py-1 rounded">/charfreq.json</code></p>
+                    <p>API文档：<code class="bg-gray-800 px-2 py-1 rounded">[你的API文档]</code></p>
+                    <p>数据源：<code class="bg-gray-800 px-2 py-1 rounded">/charfreq.json</code></p>
                 </div>
             </div>
         </div>
 
         <script>
-            // 本地存储KEY & 全局结果对象
             const HISTORY_KEY = 'ngender_guess_history';
             let guessResult = window.guessResult || null;
 
-            // 页面加载立即渲染历史记录
             window.onload = renderHistory;
 
-            // 表单提交后，保存带结果的记录到LocalStorage
             document.getElementById('nameForm').addEventListener('submit', function(e) {
                 if (guessResult) {
                     saveToHistory(guessResult);
-                    guessResult = null; // 重置避免重复保存
+                    guessResult = null;
                 }
             });
 
-            /**
-             * 保存记录到LocalStorage - 包含【姓名、性别、置信度、查询时间】
-             * @param {Object} res 猜测结果 {name, gender, gender_cn, prob}
-             */
             function saveToHistory(res) {
                 let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-                // 去重：重复姓名移除旧记录，新记录置顶
-                history = history.filter(item => item.name !== res.name);
-                // 拼接完整记录（加查询时间）
+                history = history.filter(item => !(item.name === res.name && item.method === res.method));
                 const record = {
                     name: res.name,
                     gender: res.gender,
                     genderCn: res.gender_cn,
                     prob: res.prob,
+                    method: res.method,
+                    methodLabel: res.method_label,
                     time: new Date().toLocaleString('zh-CN', {hour12: false})
                 };
                 history.unshift(record);
-                // 限制最多保存15条记录，避免冗余
                 if (history.length > 15) history = history.slice(0, 15);
-                // 保存到本地
                 localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-                // 重新渲染
                 renderHistory();
             }
 
-            /**
-             * 渲染历史记录 - 展示所有信息，点击重查，带删除按钮
-             */
             function renderHistory() {
                 const historyList = document.getElementById('historyList');
                 const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
 
-                // 无历史记录
                 if (history.length === 0) {
                     historyList.innerHTML = '<p class="text-gray-500 text-sm py-4">暂无查询记录，猜一个姓名看看吧～</p>';
                     return;
                 }
 
-                // 有历史记录，循环渲染
                 historyList.innerHTML = '';
                 history.forEach((item, index) => {
                     const itemEl = document.createElement('div');
                     itemEl.className = 'history-item';
-                    // 渲染：姓名 + 性别（带颜色类） + 置信度 + 时间 + 删除按钮
                     itemEl.innerHTML = `
-                        <div class="flex justify-between items-center">
+                        <div class="flex justify-between items-center flex-wrap">
                             <div>
                                 <span class="font-medium">${item.name}</span>
                                 <span class="gender-${item.gender} ml-2">${item.genderCn}</span>
                                 <span class="prob">${item.prob}</span>
+                                <span class="method-tag ${item.method == <?php echo METHOD_NORMAL; ?> ? 'tag-normal' : (item.method == <?php echo METHOD_REVERSE; ?> ? 'tag-reverse' : 'tag-opposite')}">
+                                    ${item.methodLabel}
+                                </span>
                             </div>
-                            <span class="text-xs text-gray-400">${item.time}</span>
+                            <span class="text-xs text-gray-400 mt-1 sm:mt-0">${item.time}</span>
                         </div>
                         <div class="text-right mt-1">
-                            <span class="history-remove" onclick="e=>e.stopPropagation(); removeHistory(${index})">删除</span>
+                            <span class="history-remove" onclick="removeHistory(${index})">删除</span>
                         </div>
                     `;
-                    // 点击历史项：填充姓名并自动提交查询
                     itemEl.addEventListener('click', () => {
                         document.querySelector('input[name="name"]').value = item.name;
+                        document.querySelector('select[name="method"]').value = item.method;
                         document.getElementById('nameForm').submit();
                     });
-                    // 删除按钮阻止冒泡（避免触发重查）
                     itemEl.querySelector('.history-remove').addEventListener('click', (e) => {
                         e.stopPropagation();
                         removeHistory(index);
@@ -349,10 +538,6 @@ elseif ($route === '/') {
                 });
             }
 
-            /**
-             * 删除单条历史记录
-             * @param {Number} index 记录索引
-             */
             function removeHistory(index) {
                 let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
                 history.splice(index, 1);
@@ -360,9 +545,6 @@ elseif ($route === '/') {
                 renderHistory();
             }
 
-            /**
-             * 清空所有历史记录（带确认）
-             */
             function clearAllHistory() {
                 if (confirm('确定要清空所有查询历史吗？清空后不可恢复！')) {
                     localStorage.removeItem(HISTORY_KEY);
@@ -370,14 +552,12 @@ elseif ($route === '/') {
                 }
             }
 
-            /**
-             * 生成明文分享链接?data=xxx + 复制到剪贴板
-             * @param {String} name 要分享的姓名
-             */
             function copyShareLink(name) {
-                // 生成格式：当前域名?data=姓名（明文，直接打开即可解析）
-                const shareUrl = `${window.location.origin}/?data=${encodeURIComponent(name)}`;
-                // 复制到剪贴板
+                const method = document.getElementById('shareMethod').value;
+                let shareUrl = `${window.location.origin}/?data=${encodeURIComponent(name)}`;
+                if (method != <?php echo METHOD_NORMAL; ?>) {
+                    shareUrl += `&method=${encodeURIComponent(method)}`;
+                }
                 navigator.clipboard.writeText(shareUrl).then(() => {
                     const tip = document.getElementById('copyTip');
                     tip.style.display = 'block';
@@ -392,13 +572,15 @@ elseif ($route === '/') {
     <?php
 }
 
-// 路由3：404未匹配
+// 路由3：404
 else {
     jsonExit(404, '路由不存在', ['support'=>[
         '/' => '网页界面', 
         '/api/v1/genderguess' => '性别猜测API', 
-        '/api/v1/genderguess?name=xxx&nolimit=1' => '性别猜测API（解除字数限制）',
-        '?data=姓名' => '明文分享'
+        '/api/v1/genderguess?name=xxx&nolimit=1' => '解除字数限制',
+        '/api/v1/genderguess?name=xxx&method=1' => '反转性别',
+        '/api/v1/genderguess?name=xxx&method=2' => '反向性别',
+        '?data=姓名&method=1/2' => '明文分享'
     ]]);
 }
 ?>
