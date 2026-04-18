@@ -2,6 +2,7 @@
 
 简体中文 | [LLMs.txt](https://github.com/yyswys-yjyj/ngender-php-api/blob/main/llm.txt)
 
+![](https://visitor.serveryyswys.top/cnt/ngender-php-api)
 ---
 ## 概述
 这是一个用AI辅助编写的项目，将observerss大佬的ngender改成了php版，支持网页与API访问/调用
