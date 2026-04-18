@@ -1,6 +1,6 @@
 # ngender-php-API
 
-简体中文 | [llm.txt](https://github.com/yyswys-yjyj/ngender-php-api/blob/main/llm.txt)
+简体中文 | [LLMs.txt](https://github.com/yyswys-yjyj/ngender-php-api/blob/main/llm.txt)
 
 ---
 ## 概述
