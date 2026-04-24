@@ -1,13 +1,11 @@
 <?php
 /**
- * NGender 纯PHP单文件版 - 修复反向性别模式（交换男女得分）
- * 核心：method=2 时交换男性/女性得分，重新计算性别，而非仅改展示
- * 新增：method=3 随机模式，侧边栏映射表配置器，AJAX 无刷新提交，调试功能
+ * NGender 纯PHP单文件版 - 优化
  */
 header('Content-Type: text/html; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type');
+header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+header('Access-Control-Allow-Headers', 'Content-Type');
 
 // 前置检查
 if (version_compare(PHP_VERSION, '7.0.0', '<')) jsonExit(500, 'PHP版本要求7.0及以上');
@@ -391,7 +389,7 @@ if ($route === '/api/v1/genderguess') {
     $nolimit = getParam('nolimit');
     $method = isset($_GET['method']) || isset($_POST['method']) ? (int)getParam('method') : METHOD_NORMAL;
     $mappingStr = getParam('mapping');
-    $debug = isset($_GET['debug']) ? (int)getParam('debug') : 0; // 新增调试参数
+    $debug = isset($_GET['debug']) ? (int)getParam('debug') : 0;
     if (!in_array($method, [METHOD_NORMAL, METHOD_REVERSE, METHOD_OPPOSITE, METHOD_RANDOM])) $method = METHOD_NORMAL;
     $debugInfo = ($debug == 1) ? ['request' => ['name'=>$name, 'method'=>$method, 'mapping'=>$mappingStr]] : null;
     $mapping = null;
@@ -454,103 +452,78 @@ elseif ($route === '/') {
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>中文姓名性别猜测</title>
+        <meta name="description" content="开源的中文姓名性别猜测工具，支持使用API">
+        <meta name="keywords" content="中文姓名性别猜测,姓名性别猜测,中文姓名性别,性别预测,NGender,星辰落锤">
+        <meta name="author" content="Serveryyswys">
+        <meta name="robots" content="index, follow">
+        <meta property="og:title" content="中文姓名性别猜测">
+        <meta property="og:description" content="基于贝叶斯算法的中文姓名性别猜测工具，支持自定义映射表、多种模式及随机模式。">
+        <meta property="og:type" content="website">
+        <meta property="og:url" content="https://fun.serveryyswys.top/">
+        <meta name="twitter:card" content="summary">
+        <meta name="twitter:title" content="中文姓名性别猜测">
+        <meta name="twitter:description" content="基于贝叶斯算法的中文姓名性别猜测工具，支持自定义映射表、多种模式及随机模式。">
+        <!-- 关键修改：恢复正常加载 CSS，同时使用加载动画遮罩避免 FOUC -->
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
         <script src="https://cdn.tailwindcss.com"></script>
+        <link rel="stylesheet" href="style.css">
+        <!-- 内联样式：保证加载动画在 CSS 加载前也能全屏覆盖，防止布局错乱 -->
         <style>
-            /* 样式与之前相同，保留 */
-            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-            body { font-family: 'Inter', sans-serif; background: #1f2937; color: #f9fafb; }
-            .container { max-width: 500px; margin: 60px auto; padding: 0 20px; }
-            .card { background: #374151; border-radius: 12px; padding: 30px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-            .gender-male { color: #3b82f6; font-weight: 600; }
-            .gender-female { color: #ec4899; font-weight: 600; }
-            .prob { font-size: 14px; color: #9ca3af; margin-left: 10px; }
-            .animate-fadeInUp { animation: fadeInUp 0.5s ease forwards; }
-            .fade-out { opacity: 0; transform: translateY(-10px); transition: all 0.2s ease; }
-            .fade-in { opacity: 1; transform: translateY(0); transition: all 0.3s ease; }
-            .history-item { background: #4b5563; padding: 12px; border-radius: 8px; margin-bottom: 8px; text-align: left; cursor: pointer; transition: background 0.2s; }
-            .history-item:hover { background: #586575; }
-            .history-remove { color: #ef4444; cursor: pointer; font-size: 12px; margin-left: 8px; }
-            .share-btn { background: #10b981; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 14px; margin-top: 10px; transition: background 0.2s; }
-            .share-btn:hover { background: #059669; }
-            .copy-tip { font-size: 12px; color: #10b981; margin-top: 6px; display: none; }
-            .share-section { background: #4b5563/50; border-radius: 8px; padding: 16px; margin-top: 12px; }
-            .method-tag { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; margin-left: 8px; }
-            .tag-normal { background: #3b82f6/30; color: #3b82f6; }
-            .tag-reverse { background: #ef4444/30; color: #ef4444; }
-            .tag-opposite { background: #ec4899/30; color: #ec4899; }
-            .tag-random { background: #f59e0b/30; color: #f59e0b; }
-            .modified-badge { background: #8b5cf6/30; color: #8b5cf6; font-size: 10px; padding: 2px 6px; border-radius: 10px; margin-left: 8px; }
-            @keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-            .loading-spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #9ca3af; border-top-color: #8b5cf6; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 8px; }
-            @keyframes spin { to { transform: rotate(360deg); } }
-            .btn-loading { opacity: 0.7; pointer-events: none; }
-            /* 侧边栏样式 */
-            .mapping-sidebar {
-                position: fixed; top: 0; left: -400px; width: 400px; height: 100vh;
-                background: #1f2937; box-shadow: 2px 0 10px rgba(0,0,0,0.3);
-                transition: left 0.3s ease; z-index: 1000; overflow-y: auto; padding: 20px;
-                border-right: 1px solid #4b5563;
+            /* 确保页面加载动画始终全屏，背景与深色主题一致 */
+            .page-loader {
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: #0f172a;  /* 深色背景，与页面风格一致 */
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                z-index: 9999;
+                transition: opacity 0.5s ease, visibility 0.5s ease;
+                opacity: 1;
+                visibility: visible;
             }
-            .mapping-sidebar.open { left: 0; }
-            .sidebar-overlay {
-                position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                background: rgba(0,0,0,0.5); visibility: hidden; opacity: 0;
-                transition: visibility 0.3s, opacity 0.3s; z-index: 999;
+            .page-loader.loader-hidden {
+                opacity: 0;
+                visibility: hidden;
             }
-            .sidebar-overlay.active { visibility: visible; opacity: 1; }
-            .mapping-item {
-                background: #374151; border-radius: 8px; padding: 12px; margin-bottom: 12px;
-                position: relative;
+            .loader-spinner {
+                width: 48px;
+                height: 48px;
+                border: 5px solid rgba(139, 92, 246, 0.3);
+                border-top-color: #8b5cf6;
+                border-radius: 50%;
+                animation: spin 1s linear infinite;
             }
-            .mapping-item input, .mapping-item select {
-                width: 100%; padding: 6px 10px; margin-bottom: 8px; background: #4b5563;
-                border: 1px solid #6b7280; border-radius: 6px; color: white;
+            @keyframes spin {
+                to { transform: rotate(360deg); }
             }
-            .delete-item {
-                position: absolute; top: 8px; right: 8px; background: #ef4444; color: white;
-                border: none; border-radius: 4px; padding: 2px 6px; cursor: pointer; font-size: 12px;
-            }
-            .add-item-btn, .apply-mapping-btn, .debug-toggle-btn {
-                background: #10b981; color: white; padding: 8px 16px; border: none;
-                border-radius: 6px; cursor: pointer; margin-top: 12px; width: 100%;
-            }
-            .debug-toggle-btn { background: #f59e0b; }
-            .close-sidebar-btn { background: #6b7280; margin-top: 8px; }
-            .floating-btn {
-                position: fixed; bottom: 20px; left: 20px; background: #8b5cf6; color: white;
-                border-radius: 50%; width: 56px; height: 56px; display: flex; align-items: center;
-                justify-content: center; cursor: pointer; box-shadow: 0 4px 10px rgba(0,0,0,0.3);
-                transition: transform 0.2s; z-index: 1001;
-            }
-            .floating-btn:hover { transform: scale(1.05); }
-            /* 调试面板样式 */
-            .debug-panel {
-                background: #1e293b; border-radius: 8px; padding: 12px; margin-top: 16px;
-                font-family: monospace; font-size: 12px; text-align: left; overflow-x: auto;
-                max-height: 300px; overflow-y: auto;
-            }
-            .debug-panel pre { margin: 0; white-space: pre-wrap; word-wrap: break-word; color: #e2e8f0; }
-            .debug-header { cursor: pointer; user-select: none; color: #fbbf24; font-weight: bold; margin-bottom: 8px; }
         </style>
     </head>
     <body>
+        <!-- 全局加载动画 -->
+        <div id="pageLoader" class="page-loader">
+            <div class="loader-spinner"></div>
+        </div>
+
         <div class="floating-btn" id="openSidebarBtn">
-            <svg xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M9 4v16"/><path d="M15 4v16"/></svg>
+            <i class="fa-solid fa-table"></i>
         </div>
         <div id="sidebarOverlay" class="sidebar-overlay"></div>
         <div id="mappingSidebar" class="mapping-sidebar">
-            <h2 class="text-xl font-bold mb-4 text-white">自定义映射表</h2>
-            <p class="text-sm text-gray-400 mb-4">添加映射组，手动指定一个姓名的性别与权重</p>
+            <h2 class="text-xl font-bold mb-4 text-white"><i class="fa-solid fa-list-ul mr-2"></i>自定义映射表</h2>
+            <p class="text-sm text-gray-400 mb-4"><i class="fa-solid fa-info-circle mr-1"></i>添加映射组，手动指定一个姓名的性别与权重</p>
             <div id="mappingItemsContainer"></div>
-            <button id="addMappingItem" class="add-item-btn">添加映射组</button>
-            <button id="applyMappingBtn" class="apply-mapping-btn">应用映射表</button>
-            <!-- 调试开关按钮 -->
-            <button id="debugToggleBtn" class="debug-toggle-btn">启用调试功能</button>
-            <button id="closeSidebarBtn" class="add-item-btn close-sidebar-btn">✖ 关闭</button>
+            <button id="addMappingItem" class="add-item-btn"><i class="fa-solid fa-plus mr-2"></i>添加映射组</button>
+            <button id="applyMappingBtn" class="apply-mapping-btn"><i class="fa-solid fa-check mr-2"></i>应用映射表</button>
+            <button id="debugToggleBtn" class="debug-toggle-btn"><i class="fa-solid fa-bug mr-2"></i>启用调试功能</button>
+            <button id="closeSidebarBtn" class="add-item-btn close-sidebar-btn"><i class="fa-solid fa-xmark mr-2"></i>关闭</button>
         </div>
         <div class="container">
             <div class="card text-center">
-                <h1 class="text-2xl font-bold mb-4">中文姓名性别猜测</h1>
+                <h1 class="text-2xl font-bold mb-4"><i class="fa-solid fa-venus-mars mr-2"></i>中文姓名性别猜测</h1>
                 <p class="text-gray-400 mb-8">基于贝叶斯算法 | 仅供娱乐 请勿当真<br>参考项目：<a href="https://github.com/observerss/NGender">observerss:NGender</a><br>开源：<a href="https://github.com/yyswys-yjyj/ngender-php-api">yyswys-yjyj:ngender-php-api</a></p>
                 <form id="nameForm" class="mb-6" onsubmit="return false;">
                     <div class="mb-4">
@@ -560,36 +533,41 @@ elseif ($route === '/') {
                                required>
                     </div>
                     <div class="mb-4">
-                        <label class="block text-sm text-gray-300 mb-2 text-left">模式：</label>
+                        <label class="block text-sm text-gray-300 mb-2 text-left"><i class="fa-solid fa-sliders mr-1"></i>模式：</label>
                         <select id="methodSelect" class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500">
-                            <option value="<?php echo METHOD_NORMAL; ?>" <?php echo $defaultMethod == METHOD_NORMAL ? 'selected' : ''; ?>>正常</option>
-                            <option value="<?php echo METHOD_REVERSE; ?>" <?php echo $defaultMethod == METHOD_REVERSE ? 'selected' : ''; ?>>反转性别</option>
-                            <option value="<?php echo METHOD_OPPOSITE; ?>" <?php echo $defaultMethod == METHOD_OPPOSITE ? 'selected' : ''; ?>>反向性别</option>
-                            <option value="<?php echo METHOD_RANDOM; ?>" <?php echo $defaultMethod == METHOD_RANDOM ? 'selected' : ''; ?>>随机模式</option>
+                            <option value="<?php echo METHOD_NORMAL; ?>" <?php echo $defaultMethod == METHOD_NORMAL ? 'selected' : ''; ?>><i class="fa-solid fa-check mr-1"></i>正常</option>
+                            <option value="<?php echo METHOD_REVERSE; ?>" <?php echo $defaultMethod == METHOD_REVERSE ? 'selected' : ''; ?>><i class="fa-solid fa-repeat mr-1"></i>反转性别</option>
+                            <option value="<?php echo METHOD_OPPOSITE; ?>" <?php echo $defaultMethod == METHOD_OPPOSITE ? 'selected' : ''; ?>><i class="fa-solid fa-exchange mr-1"></i>反向性别</option>
+                            <option value="<?php echo METHOD_RANDOM; ?>" <?php echo $defaultMethod == METHOD_RANDOM ? 'selected' : ''; ?>><i class="fa-solid fa-shuffle mr-1"></i>随机模式</option>
                         </select>
                     </div>
                     <input type="hidden" id="mappingHidden" value="">
                     <button type="submit" id="submitBtn" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg transition duration-300 transform hover:scale-105 active:scale-95">
-                        开始猜测性别
+                        <i class="fa-solid fa-magnifying-glass mr-2"></i>开始猜测性别
                     </button>
                 </form>
-                <div id="errorMsg" class="bg-red-900/30 border border-red-700/50 rounded-lg p-3 text-red-400 mb-4 hidden"></div>
+                <div id="errorMsg" class="bg-red-900/30 border border-red-700/50 rounded-lg p-3 text-red-400 mb-4 hidden"><i class="fa-solid fa-circle-exclamation mr-2"></i></div>
                 <div id="resultContainer" class="transition-all duration-300">
                     <?php if ($result): ?>
                     <div class="bg-gray-800/50 rounded-lg p-4 mt-4 animate-fadeInUp">
                         <p class="text-lg mb-2">
-                            姓名：<span class="font-bold text-white"><?php echo $result['name']; ?></span>
+                            <i class="fa-solid fa-user mr-2"></i>姓名：<span class="font-bold text-white"><?php echo $result['name']; ?></span>
                         </p>
                         <p class="text-xl">
-                            猜测性别：<span class="gender-<?php echo $result['gender']; ?>"><?php echo $result['gender_cn']; ?></span>
-                            <span class="prob">置信度：<?php echo $result['prob']; ?></span>
+                            <i class="fa-solid fa-venus-mars mr-2"></i>猜测性别：
+                            <?php if($result['gender'] == 'male'): ?>
+                                <span class="gender-male"><i class="fa-solid fa-mars mr-1"></i><?php echo $result['gender_cn']; ?></span>
+                            <?php else: ?>
+                                <span class="gender-female"><i class="fa-solid fa-venus mr-1"></i><?php echo $result['gender_cn']; ?></span>
+                            <?php endif; ?>
+                            <span class="prob"><i class="fa-solid fa-percent mr-1"></i>置信度：<?php echo $result['prob']; ?></span>
                         </p>
-                        <p class="mt-2 text-yellow-400 text-sm"><?php echo $randomTip; ?></p>
+                        <p class="mt-2 text-yellow-400 text-sm"><i class="fa-solid fa-quote-left mr-1"></i><?php echo $randomTip; ?></p>
                     </div>
                     <div class="share-section animate-fadeInUp">
-                        <h3 class="text-lg font-medium mb-3 text-gray-200">分享设置</h3>
+                        <h3 class="text-lg font-medium mb-3 text-gray-200"><i class="fa-solid fa-share-alt mr-2"></i>分享设置</h3>
                         <div class="mb-4 text-left">
-                            <label class="block text-sm text-gray-400 mb-2">分享模式：</label>
+                            <label class="block text-sm text-gray-400 mb-2"><i class="fa-solid fa-sliders mr-1"></i>分享模式：</label>
                             <select id="shareMethod" class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500">
                                 <option value="<?php echo METHOD_NORMAL; ?>" <?php echo $result['method'] == METHOD_NORMAL ? 'selected' : ''; ?>>正常</option>
                                 <option value="<?php echo METHOD_REVERSE; ?>" <?php echo $result['method'] == METHOD_REVERSE ? 'selected' : ''; ?>>反转性别</option>
@@ -597,31 +575,35 @@ elseif ($route === '/') {
                                 <option value="<?php echo METHOD_RANDOM; ?>" <?php echo $result['method'] == METHOD_RANDOM ? 'selected' : ''; ?>>随机模式</option>
                             </select>
                         </div>
-                        <button class="share-btn w-full" onclick="copyShareLink('<?php echo $result['name']; ?>')">复制分享链接</button>
-                        <p class="copy-tip" id="copyTip">链接已复制！打开直接看结果</p>
+                        <button class="share-btn w-full" onclick="copyShareLink('<?php echo $result['name']; ?>')"><i class="fa-solid fa-copy mr-2"></i>复制分享链接</button>
+                        <p class="copy-tip" id="copyTip"><i class="fa-solid fa-check mr-1"></i>链接已复制！打开直接看结果</p>
                     </div>
                     <?php endif; ?>
                 </div>
-                <!-- 调试面板 -->
                 <div id="debugPanel" class="debug-panel" style="display: none;">
-                    <div class="debug-header">📊 调试信息</div>
+                    <div class="debug-header"><i class="fa-solid fa-code mr-2"></i>调试信息</div>
                     <pre id="debugContent"></pre>
                 </div>
                 <div class="mt-8" id="historySection">
-                    <h3 class="text-lg font-medium mb-4 text-gray-300">查询历史</h3>
+                    <h3 class="text-lg font-medium mb-4 text-gray-300"><i class="fa-solid fa-clock-rotate-left mr-2"></i>查询历史</h3>
                     <div id="historyList" class="max-h-48 overflow-y-auto pr-2"></div>
-                    <button class="text-sm text-gray-400 mt-3 hover:text-white" onclick="clearAllHistory()">清空所有历史</button>
+                    <button class="text-sm text-gray-400 mt-3 hover:text-white" onclick="clearAllHistory()"><i class="fa-solid fa-trash mr-1"></i>清空所有历史</button>
                 </div>
                 <div class="mt-8 text-sm text-gray-500">
-                    <p>API文档：<code class="bg-gray-800 px-2 py-1 rounded">https://apihelp.serveryyswys.top/8408398m0</code></p>
-                    <p>数据源：<code class="bg-gray-800 px-2 py-1 rounded">/charfreq.json</code></p>
+                    <p><i class="fa-solid fa-book mr-1"></i>API文档：<code class="bg-gray-800 px-2 py-1 rounded">https://apihelp.serveryyswys.top/8408398m0</code></p>
+                    <p><i class="fa-solid fa-database mr-1"></i>数据源：<code class="bg-gray-800 px-2 py-1 rounded">/charfreq.json</code></p>
                 </div>
             </div>
         </div>
         <script>
+            // 页面加载完成后隐藏加载动画（此时 CSS 已加载并应用，布局稳定）
+            window.addEventListener('load', function() {
+                const loader = document.getElementById('pageLoader');
+                if (loader) loader.classList.add('loader-hidden');
+            });
+
             const HISTORY_KEY = 'ngender_guess_history';
             const API_BASE = window.location.origin + '/api/v1/genderguess';
-            // 侧边栏元素
             const sidebar = document.getElementById('mappingSidebar');
             const overlay = document.getElementById('sidebarOverlay');
             const openBtn = document.getElementById('openSidebarBtn');
@@ -634,7 +616,7 @@ elseif ($route === '/') {
             const debugPanel = document.getElementById('debugPanel');
             const debugContent = document.getElementById('debugContent');
             let mappingItems = [];
-            let debugEnabled = false;  // 调试模式状态
+            let debugEnabled = false;
 
             function openSidebar() { sidebar.classList.add('open'); overlay.classList.add('active'); }
             function closeSidebar() { sidebar.classList.remove('open'); overlay.classList.remove('active'); }
@@ -642,15 +624,14 @@ elseif ($route === '/') {
             closeSidebarBtn.addEventListener('click', closeSidebar);
             overlay.addEventListener('click', closeSidebar);
 
-            // 调试开关
             debugToggleBtn.addEventListener('click', function() {
                 debugEnabled = !debugEnabled;
                 if (debugEnabled) {
-                    debugToggleBtn.textContent = '关闭调试功能';
+                    debugToggleBtn.innerHTML = '<i class="fa-solid fa-bug mr-2"></i>关闭调试功能';
                     debugToggleBtn.style.background = '#ef4444';
                     debugPanel.style.display = 'block';
                 } else {
-                    debugToggleBtn.textContent = '启用调试功能';
+                    debugToggleBtn.innerHTML = '<i class="fa-solid fa-bug mr-2"></i>启用调试功能';
                     debugToggleBtn.style.background = '#f59e0b';
                     debugPanel.style.display = 'none';
                     debugContent.textContent = '';
@@ -663,11 +644,11 @@ elseif ($route === '/') {
                     const div = document.createElement('div');
                     div.className = 'mapping-item';
                     div.innerHTML = `
-                        <button class="delete-item" data-index="${index}">删除</button>
+                        <button class="delete-item" data-index="${index}"><i class="fa-solid fa-trash"></i></button>
                         <input type="text" placeholder="姓名（如：张三）" value="${escapeHtml(item.name)}" data-field="name" data-index="${index}">
                         <select data-field="gender" data-index="${index}">
-                            <option value="male" ${item.gender === 'male' ? 'selected' : ''}>男</option>
-                            <option value="female" ${item.gender === 'female' ? 'selected' : ''}>女</option>
+                            <option value="male" ${item.gender === 'male' ? 'selected' : ''}><i class="fa-solid fa-mars mr-1"></i>男</option>
+                            <option value="female" ${item.gender === 'female' ? 'selected' : ''}><i class="fa-solid fa-venus mr-1"></i>女</option>
                         </select>
                         <input type="number" step="0.01" min="0.5" max="1" placeholder="最小概率 (0.5~1)" value="${item.min}" data-field="min" data-index="${index}">
                         <input type="number" step="0.01" min="0.5" max="1" placeholder="最大概率 (0.5~1)" value="${item.max}" data-field="max" data-index="${index}">
@@ -743,7 +724,7 @@ elseif ($route === '/') {
                 try {
                     let url = `${API_BASE}?name=${encodeURIComponent(name)}&method=${method}`;
                     if (mapping) url += `&mapping=${encodeURIComponent(mapping)}`;
-                    if (debugEnabled) url += `&debug=1`;  // 开启调试
+                    if (debugEnabled) url += `&debug=1`;
                     const response = await fetch(url);
                     const data = await response.json();
                     if (data.code !== 200) {
@@ -782,24 +763,24 @@ elseif ($route === '/') {
             function updateResultUI(result) {
                 const container = document.getElementById('resultContainer');
                 const genderClass = result.gender === 'male' ? 'gender-male' : 'gender-female';
+                const genderIcon = result.gender === 'male' ? 'fa-mars' : 'fa-venus';
                 const genderCn = result.gender_cn;
-                const modifiedBadge = result.ismodified ? '<span class="modified-badge"></span>' : '';
                 container.innerHTML = `
                     <div class="bg-gray-800/50 rounded-lg p-4 mt-4 animate-fadeInUp">
-                        <p class="text-lg mb-2">姓名：<span class="font-bold text-white">${escapeHtml(result.name)}</span>${modifiedBadge}</p>
-                        <p class="text-xl">猜测性别：<span class="${genderClass}">${genderCn}</span><span class="prob">置信度：${result.probability}</span></p>
-                        <p class="mt-2 text-yellow-400 text-sm">${escapeHtml(result.fun_tip)}</p>
+                        <p class="text-lg mb-2"><i class="fa-solid fa-user mr-2"></i>姓名：<span class="font-bold text-white">${escapeHtml(result.name)}</span></p>
+                        <p class="text-xl"><i class="fa-solid fa-venus-mars mr-2"></i>猜测性别：<span class="${genderClass}"><i class="fa-solid ${genderIcon} mr-1"></i>${genderCn}</span><span class="prob"><i class="fa-solid fa-percent mr-1"></i>置信度：${result.probability}</span></p>
+                        <p class="mt-2 text-yellow-400 text-sm"><i class="fa-solid fa-quote-left mr-1"></i>${escapeHtml(result.fun_tip)}</p>
                     </div>
                     <div class="share-section animate-fadeInUp mt-4">
-                        <h3 class="text-lg font-medium mb-3 text-gray-200">分享设置</h3>
+                        <h3 class="text-lg font-medium mb-3 text-gray-200"><i class="fa-solid fa-share-alt mr-2"></i>分享设置</h3>
                         <div class="mb-4 text-left">
-                            <label class="block text-sm text-gray-400 mb-2">分享模式：</label>
+                            <label class="block text-sm text-gray-400 mb-2"><i class="fa-solid fa-sliders mr-1"></i>分享模式：</label>
                             <select id="shareMethod" class="w-full px-3 py-2 bg-gray-800 border border-gray-600 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-purple-500">
                                 <option value="0">正常</option><option value="1">反转性别</option><option value="2">反向性别</option><option value="3">随机模式</option>
                             </select>
                         </div>
-                        <button class="share-btn w-full" onclick="copyShareLink('${escapeHtml(result.name)}')">复制分享链接</button>
-                        <p class="copy-tip" id="copyTip">链接已复制！打开直接看结果</p>
+                        <button class="share-btn w-full" onclick="copyShareLink('${escapeHtml(result.name)}')"><i class="fa-solid fa-copy mr-2"></i>复制分享链接</button>
+                        <p class="copy-tip" id="copyTip"><i class="fa-solid fa-check mr-1"></i>链接已复制！打开直接看结果</p>
                     </div>
                 `;
                 const shareMethodSelect = document.getElementById('shareMethod');
@@ -816,17 +797,17 @@ elseif ($route === '/') {
             function renderHistory() {
                 const historyList = document.getElementById('historyList');
                 const history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
-                if (history.length === 0) { historyList.innerHTML = '<p class="text-gray-500 text-sm py-4">暂无查询记录，猜一个姓名看看吧～</p>'; return; }
+                if (history.length === 0) { historyList.innerHTML = '<p class="text-gray-500 text-sm py-4"><i class="fa-solid fa-inbox mr-2"></i>暂无查询记录，猜一个姓名看看吧～</p>'; return; }
                 historyList.innerHTML = '';
                 history.forEach((item, index) => {
                     const itemEl = document.createElement('div'); itemEl.className = 'history-item';
-                    const modifiedBadge = item.ismodified ? '<span class="modified-badge ml-1"></span>' : '';
+                    const genderIcon = item.gender === 'male' ? 'fa-mars' : 'fa-venus';
                     itemEl.innerHTML = `
                         <div class="flex justify-between items-center flex-wrap">
-                            <div><span class="font-medium">${escapeHtml(item.name)}</span><span class="gender-${item.gender} ml-2">${item.gender_cn}</span><span class="prob">${item.prob}</span><span class="method-tag ${getMethodTagClass(item.method)}">${item.method_label}</span>${modifiedBadge}</div>
+                            <div><span class="font-medium">${escapeHtml(item.name)}</span><span class="gender-${item.gender} ml-2"><i class="fa-solid ${genderIcon} mr-1"></i>${item.gender_cn}</span><span class="prob">${item.prob}</span><span class="method-tag ${getMethodTagClass(item.method)}">${item.method_label}</span></span></div>
                             <span class="text-xs text-gray-400 mt-1 sm:mt-0">${item.time}</span>
                         </div>
-                        <div class="text-right mt-1"><span class="history-remove" onclick="removeHistory(${index})">删除</span></div>
+                        <div class="text-right mt-1"><span class="history-remove" onclick="removeHistory(${index})"><i class="fa-solid fa-trash mr-1"></i>删除</span></div>
                     `;
                     itemEl.addEventListener('click', () => { document.getElementById('nameInput').value = item.name; document.getElementById('methodSelect').value = item.method; document.getElementById('submitBtn').click(); });
                     itemEl.querySelector('.history-remove').addEventListener('click', (e) => { e.stopPropagation(); removeHistory(index); });
@@ -836,7 +817,7 @@ elseif ($route === '/') {
             function removeHistory(index) { let history = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); history.splice(index,1); localStorage.setItem(HISTORY_KEY,JSON.stringify(history)); renderHistory(); }
             function clearAllHistory() { if(confirm('确定要清空所有查询历史吗？清空后不可恢复！')){ localStorage.removeItem(HISTORY_KEY); renderHistory(); } }
             function copyShareLink(name) { const method = document.getElementById('shareMethod').value; let shareUrl = `${window.location.origin}/?data=${encodeURIComponent(name)}`; if(method != 0) shareUrl += `&method=${encodeURIComponent(method)}`; navigator.clipboard.writeText(shareUrl).then(()=>{ const tip = document.getElementById('copyTip'); if(tip){ tip.style.display='block'; setTimeout(()=>tip.style.display='none',2000); } }).catch(()=>alert('复制失败，请手动复制：\n'+shareUrl)); }
-            function showError(msg) { const errorDiv = document.getElementById('errorMsg'); errorDiv.textContent = msg; errorDiv.classList.remove('hidden'); }
+            function showError(msg) { const errorDiv = document.getElementById('errorMsg'); errorDiv.innerHTML = '<i class="fa-solid fa-circle-exclamation mr-2"></i>' + msg; errorDiv.classList.remove('hidden'); }
             function hideError() { document.getElementById('errorMsg').classList.add('hidden'); }
             function escapeHtml(str) { if(!str) return ''; return str.replace(/[&<>]/g, function(m){ if(m==='&') return '&amp;'; if(m==='<') return '&lt;'; if(m==='>') return '&gt;'; return m;}); }
         </script>
@@ -846,8 +827,8 @@ elseif ($route === '/') {
 }
 else {
     jsonExit(404, '路由不存在', ['support'=>[
-        '/' => '网页界面', 
-        '/api/v1/genderguess' => '性别猜测API', 
+        '/' => '网页界面',
+        '/api/v1/genderguess' => '性别猜测API',
         '/api/v1/genderguess?name=xxx&nolimit=1' => '解除字数限制',
         '/api/v1/genderguess?name=xxx&method=1' => '反转性别',
         '/api/v1/genderguess?name=xxx&method=2' => '反向性别',
